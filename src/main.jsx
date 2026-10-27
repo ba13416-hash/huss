@@ -30,6 +30,8 @@ const firebaseConfig = {
 }
 const firebaseReady = Object.values(firebaseConfig).every(Boolean)
 const db = firebaseReady ? getFirestore(initializeApp(firebaseConfig)) : null
+// Client-side convenience lock only. A four-digit PIN hash is not database authorization.
+const ADMIN_PIN_SHA256 = 'a6f766a88c0bb123f62b462bbd69d6b936b8649ddf6b3fa9738fe44fabe79422'
 
 function App() {
   const [stage, setStage] = useState(() => window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -43,6 +45,9 @@ function App() {
   const [adminError, setAdminError] = useState('')
   const [departmentSearch, setDepartmentSearch] = useState('')
   const [loadedDepartment, setLoadedDepartment] = useState('')
+  const [adminUnlocked, setAdminUnlocked] = useState(false)
+  const [adminPin, setAdminPin] = useState('')
+  const [pinError, setPinError] = useState('')
 
   useEffect(() => {
     const syncRoute = () => setStage(window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -62,8 +67,23 @@ function App() {
       setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
       setLoadedDepartment(department)
     } catch (err) {
-      console.error(err); setAdminError('응답을 불러오지 못했습니다. Firestore 규칙을 확인해 주세요.')
+      console.error('HUSS admin query failed:', err)
+      if (err.code === 'permission-denied') {
+        setAdminError('Firestore에서 조회 권한을 거부했습니다. Firebase Console의 Firestore > 규칙에서 응답 읽기 규칙을 게시했는지 확인해 주세요.')
+      } else if (err.code === 'failed-precondition') {
+        setAdminError('Firestore 인덱스 설정이 필요합니다. 브라우저 개발자 도구의 오류에 표시된 링크에서 인덱스를 생성해 주세요.')
+      } else {
+        setAdminError(`응답 조회 오류: ${err.code || 'unknown'}${err.message ? ` — ${err.message}` : ''}`)
+      }
     } finally { setAdminLoading(false) }
+  }
+  const unlockAdmin = async e => {
+    e.preventDefault()
+    if (!/^\d{4}$/.test(adminPin)) { setPinError('4자리 숫자를 입력해 주세요.'); return }
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adminPin))
+    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+    if (hash === ADMIN_PIN_SHA256) { setAdminUnlocked(true); setPinError(''); setAdminPin('') }
+    else { setPinError('PIN이 올바르지 않습니다.'); setAdminPin('') }
   }
   const filteredResponses = responses
   const exportCsv = () => {
@@ -119,8 +139,8 @@ function App() {
   }
 
   return <main className="shell">
-    <header className="topbar"><a className="brand" href="#home" onClick={() => setStage('intro')}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => setStage('intro')}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
-    {stage === 'admin' && <section className="admin-panel">
+    <header className="topbar"><a className="brand" href="#home" onClick={() => {setStage('intro');setAdminUnlocked(false)}}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => {setStage('intro');setAdminUnlocked(false)}}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
+    {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={adminPin.length!==4}>관리자 페이지 열기</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
       <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div>
       <form className="admin-search" onSubmit={loadDepartmentResponses}><label htmlFor="admin-department">조회할 학과</label><input id="admin-department" value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="학과명을 정확히 입력해 주세요"/><button className="primary" disabled={adminLoading || !departmentSearch.trim()}>{adminLoading?'조회 중…':'응답 조회'}</button></form>
       <div className="admin-summary"><div><span>{loadedDepartment || '조회 학과'}</span><b>{responses.length}</b></div><div><span>응답 건수</span><b>{filteredResponses.length}</b></div></div>
@@ -129,7 +149,7 @@ function App() {
       {!adminLoading && !adminError && !filteredResponses.length && <p className="admin-state">아직 저장된 응답이 없습니다.</p>}
       {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
       <p className="admin-notice">관리자 페이지에 접속한 사람은 학과명으로 응답을 조회할 수 있습니다.</p>
-    </section>}
+    </>}</section>}
     {stage === 'intro' && <section className="intro-card" id="home">
       <div className="intro-copy"><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>모두를 위한 사회,<br/><em>당신의 생각</em>을 들려주세요</h1><p className="lead">포용사회와 HUSS 프로그램에 대한 여러분의 의견을 들려주세요. 소중한 응답은 더 나은 프로그램을 만드는 데 활용됩니다.</p><div className="survey-meta"><span><b>12</b>개 질문</span><i/><span>약 <b>3분</b> 소요</span></div>
         <form className="profile-form" onSubmit={start}><h2>응답자 정보</h2><label>성별<div className="gender-row">{['여성', '남성', '기타'].map(v => <button type="button" key={v} className={`gender-choice ${profile.gender === v ? 'active' : ''}`} onClick={() => setProfile({...profile, gender:v})}>{v}</button>)}</div></label><label>이름<input required placeholder="이름을 입력해 주세요" value={profile.name} onChange={e => setProfile({...profile,name:e.target.value})}/></label><label>학과<input required placeholder="학과를 입력해 주세요" value={profile.department} onChange={e => setProfile({...profile,department:e.target.value})}/></label><button className="primary full" type="submit" disabled={!profile.gender || !profile.name.trim() || !profile.department.trim()}>설문 시작하기 <ChevronRight size={18}/></button></form>
