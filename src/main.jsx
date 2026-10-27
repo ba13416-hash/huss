@@ -45,6 +45,7 @@ function App() {
   const [adminError, setAdminError] = useState('')
   const [departmentSearch, setDepartmentSearch] = useState('')
   const [loadedDepartment, setLoadedDepartment] = useState('')
+  const [hasSearched, setHasSearched] = useState(false)
   const [adminUnlocked, setAdminUnlocked] = useState(false)
   const [adminPin, setAdminPin] = useState('')
   const [pinError, setPinError] = useState('')
@@ -60,12 +61,12 @@ function App() {
     const department = departmentSearch.trim()
     if (!department) return
     if (!db) { setAdminError('Firebase 환경변수가 설정되지 않았습니다.'); return }
-    setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment('')
+    setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
     try {
       const departmentKey = department.replaceAll('/', '_')
       const snapshot = await getDocs(query(collection(db, 'departments', departmentKey, 'responses'), orderBy('submittedAt', 'desc')))
       setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
-      setLoadedDepartment(department)
+      setLoadedDepartment(department); setHasSearched(true)
     } catch (err) {
       console.error('HUSS admin query failed:', err)
       if (err.code === 'permission-denied') {
@@ -143,10 +144,11 @@ function App() {
     {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={adminPin.length!==4}>관리자 페이지 열기</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
       <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div>
       <form className="admin-search" onSubmit={loadDepartmentResponses}><label htmlFor="admin-department">조회할 학과</label><input id="admin-department" value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="학과명을 정확히 입력해 주세요"/><button className="primary" disabled={adminLoading || !departmentSearch.trim()}>{adminLoading?'조회 중…':'응답 조회'}</button></form>
-      <div className="admin-summary"><div><span>{loadedDepartment || '조회 학과'}</span><b>{responses.length}</b></div><div><span>응답 건수</span><b>{filteredResponses.length}</b></div></div>
+      <div className="admin-summary"><div><span>조회 학과</span><b className="admin-summary-value">{loadedDepartment || '—'}</b></div><div><span>응답 건수</span><b className="admin-summary-value">{hasSearched ? filteredResponses.length : '—'}</b></div></div>
       {adminLoading && <p className="admin-state">응답을 불러오는 중입니다…</p>}
       {adminError && <p className="error-message" role="alert">{adminError}</p>}
-      {!adminLoading && !adminError && !filteredResponses.length && <p className="admin-state">아직 저장된 응답이 없습니다.</p>}
+      {!adminLoading && !adminError && !hasSearched && <p className="admin-state">학과명을 입력한 뒤 ‘응답 조회’를 눌러주세요.</p>}
+      {!adminLoading && !adminError && hasSearched && !filteredResponses.length && <p className="admin-state">‘{loadedDepartment}’에 저장된 응답이 없습니다. 학과명을 정확히 입력했는지 확인해 주세요.</p>}
       {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
       <p className="admin-notice">관리자 페이지에 접속한 사람은 학과명으로 응답을 조회할 수 있습니다.</p>
     </>}</section>}
