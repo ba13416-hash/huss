@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Check, ChevronLeft, ChevronRight, Download, Leaf, Send, TableProperties } from 'lucide-react'
 import { initializeApp } from 'firebase/app'
-import { addDoc, collection, getDocs, getFirestore, orderBy, query, serverTimestamp } from 'firebase/firestore'
+import { addDoc, collection, getFirestore, serverTimestamp } from 'firebase/firestore'
 import './style.css'
 
 const questions = [
@@ -30,8 +30,6 @@ const firebaseConfig = {
 }
 const firebaseReady = Object.values(firebaseConfig).every(Boolean)
 const db = firebaseReady ? getFirestore(initializeApp(firebaseConfig)) : null
-// Client-side convenience lock only. A four-digit PIN hash is not database authorization.
-const ADMIN_PIN_SHA256 = 'a6f766a88c0bb123f62b462bbd69d6b936b8649ddf6b3fa9738fe44fabe79422'
 
 function App() {
   const [stage, setStage] = useState(() => window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -49,6 +47,7 @@ function App() {
   const [adminUnlocked, setAdminUnlocked] = useState(false)
   const [adminPin, setAdminPin] = useState('')
   const [pinError, setPinError] = useState('')
+  const [pinLoading, setPinLoading] = useState(false)
 
   useEffect(() => {
     const syncRoute = () => setStage(window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -56,42 +55,55 @@ function App() {
     return () => window.removeEventListener('hashchange', syncRoute)
   }, [])
 
+  useEffect(() => {
+    if (stage !== 'admin') return
+    let active = true
+    fetch('/api/admin-responses', { credentials: 'same-origin' })
+      .then(response => response.ok ? response.json() : null)
+      .then(payload => { if (active) setAdminUnlocked(payload?.authenticated === true) })
+      .catch(() => { if (active) setAdminUnlocked(false) })
+    return () => { active = false }
+  }, [stage])
+
   const loadDepartmentResponses = async e => {
     e.preventDefault()
     const department = departmentSearch.trim()
     if (!department) return
-    if (!db) { setAdminError('Firebase 환경변수가 설정되지 않았습니다.'); return }
     setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
     try {
-      const departmentKey = department.replaceAll('/', '_')
-      const snapshot = await getDocs(query(collection(db, 'departments', departmentKey, 'responses'), orderBy('submittedAt', 'desc')))
-      setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
+      const response = await fetch(`/api/admin-responses?department=${encodeURIComponent(department)}`, { credentials: 'same-origin' })
+      const payload = await response.json().catch(() => ({}))
+      if (response.status === 401) { setAdminUnlocked(false); throw new Error('관리자 인증이 만료되었습니다. PIN을 다시 입력해 주세요.') }
+      if (!response.ok) throw new Error(payload.error || `응답 조회 오류 (${response.status})`)
+      setResponses(payload.responses || [])
       setLoadedDepartment(department); setHasSearched(true)
     } catch (err) {
       console.error('HUSS admin query failed:', err)
-      if (err.code === 'permission-denied') {
-        setAdminError('Firestore에서 조회 권한을 거부했습니다. Firebase Console의 Firestore > 규칙에서 응답 읽기 규칙을 게시했는지 확인해 주세요.')
-      } else if (err.code === 'failed-precondition') {
-        setAdminError('Firestore 인덱스 설정이 필요합니다. 브라우저 개발자 도구의 오류에 표시된 링크에서 인덱스를 생성해 주세요.')
-      } else {
-        setAdminError(`응답 조회 오류: ${err.code || 'unknown'}${err.message ? ` — ${err.message}` : ''}`)
-      }
+      setAdminError(err.message || '응답을 불러오지 못했습니다.')
     } finally { setAdminLoading(false) }
   }
   const unlockAdmin = async e => {
     e.preventDefault()
     if (!/^\d{4}$/.test(adminPin)) { setPinError('4자리 숫자를 입력해 주세요.'); return }
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adminPin))
-    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
-    if (hash === ADMIN_PIN_SHA256) { setAdminUnlocked(true); setPinError(''); setAdminPin('') }
-    else { setPinError('PIN이 올바르지 않습니다.'); setAdminPin('') }
+    setPinLoading(true); setPinError('')
+    try {
+      const response = await fetch('/api/admin-responses', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'login', pin: adminPin }) })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(payload.error || '관리자 PIN을 확인하지 못했습니다.')
+      setAdminUnlocked(true); setAdminPin('')
+    } catch (err) { setPinError(err.message || '관리자 인증 서버에 연결하지 못했습니다.') }
+    finally { setPinLoading(false) }
+  }
+  const logoutAdmin = async () => {
+    try { await fetch('/api/admin-responses', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'logout' }) }) } catch {}
+    setAdminUnlocked(false); setAdminPin(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
   }
   const filteredResponses = responses
   const exportCsv = () => {
     const header = ['제출일시', '성별', '이름', '학과', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
     const cell = value => `"${String(value ?? '').replaceAll('"', '""')}"`
     const rows = filteredResponses.map(row => [
-      row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '', row.gender, row.name, row.department,
+      row.submittedAt ? new Date(row.submittedAt).toLocaleString('ko-KR') : '', row.gender, row.name, row.department,
       ...questions.map((_, i) => {
         const answer = row.answers?.[i]
         if (Array.isArray(answer)) return answer.join(', ')
@@ -140,17 +152,17 @@ function App() {
   }
 
   return <main className="shell">
-    <header className="topbar"><a className="brand" href="#home" onClick={() => {setStage('intro');setAdminUnlocked(false)}}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => {setStage('intro');setAdminUnlocked(false)}}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
-    {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={adminPin.length!==4}>관리자 페이지 열기</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
-      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div>
+    <header className="topbar"><a className="brand" href="#home" onClick={() => {logoutAdmin();setStage('intro')}}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => {logoutAdmin();setStage('intro')}}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
+    {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={pinLoading || adminPin.length!==4}>{pinLoading?'확인 중…':'관리자 페이지 열기'}</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
+      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><div className="admin-actions"><button className="secondary-button" onClick={logoutAdmin}>잠금</button><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div></div>
       <form className="admin-search" onSubmit={loadDepartmentResponses}><label htmlFor="admin-department">조회할 학과</label><input id="admin-department" value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="학과명을 정확히 입력해 주세요"/><button className="primary" disabled={adminLoading || !departmentSearch.trim()}>{adminLoading?'조회 중…':'응답 조회'}</button></form>
       <div className="admin-summary"><div><span>조회 학과</span><b className="admin-summary-value">{loadedDepartment || '—'}</b></div><div><span>응답 건수</span><b className="admin-summary-value">{hasSearched ? filteredResponses.length : '—'}</b></div></div>
       {adminLoading && <p className="admin-state">응답을 불러오는 중입니다…</p>}
       {adminError && <p className="error-message" role="alert">{adminError}</p>}
       {!adminLoading && !adminError && !hasSearched && <p className="admin-state">학과명을 입력한 뒤 ‘응답 조회’를 눌러주세요.</p>}
       {!adminLoading && !adminError && hasSearched && !filteredResponses.length && <p className="admin-state">‘{loadedDepartment}’에 저장된 응답이 없습니다. 학과명을 정확히 입력했는지 확인해 주세요.</p>}
-      {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
-      <p className="admin-notice">관리자 페이지에 접속한 사람은 학과명으로 응답을 조회할 수 있습니다.</p>
+      {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt ? new Date(row.submittedAt).toLocaleString('ko-KR') : '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
+      <p className="admin-notice">관리자 PIN 인증이 완료된 세션에서만 응답을 조회할 수 있습니다. 잠금 버튼을 누르면 세션이 종료됩니다.</p>
     </>}</section>}
     {stage === 'intro' && <section className="intro-card" id="home">
       <div className="intro-copy"><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>모두를 위한 사회,<br/><em>당신의 생각</em>을 들려주세요</h1><p className="lead">포용사회와 HUSS 프로그램에 대한 여러분의 의견을 들려주세요. 소중한 응답은 더 나은 프로그램을 만드는 데 활용됩니다.</p><div className="survey-meta"><span><b>12</b>개 질문</span><i/><span>약 <b>3분</b> 소요</span></div>
