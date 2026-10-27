@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Check, ChevronLeft, ChevronRight, Download, Leaf, Send, TableProperties } from 'lucide-react'
 import { initializeApp } from 'firebase/app'
-import { addDoc, collection, collectionGroup, getDocs, getFirestore, orderBy, query, serverTimestamp } from 'firebase/firestore'
+import { addDoc, collection, getDocs, getFirestore, orderBy, query, serverTimestamp } from 'firebase/firestore'
 import './style.css'
 
 const questions = [
@@ -41,7 +41,8 @@ function App() {
   const [responses, setResponses] = useState([])
   const [adminLoading, setAdminLoading] = useState(false)
   const [adminError, setAdminError] = useState('')
-  const [departmentFilter, setDepartmentFilter] = useState('all')
+  const [departmentSearch, setDepartmentSearch] = useState('')
+  const [loadedDepartment, setLoadedDepartment] = useState('')
 
   useEffect(() => {
     const syncRoute = () => setStage(window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -49,20 +50,22 @@ function App() {
     return () => window.removeEventListener('hashchange', syncRoute)
   }, [])
 
-  useEffect(() => {
-    if (stage !== 'admin') return
+  const loadDepartmentResponses = async e => {
+    e.preventDefault()
+    const department = departmentSearch.trim()
+    if (!department) return
     if (!db) { setAdminError('Firebase 환경변수가 설정되지 않았습니다.'); return }
-    let active = true
-    setAdminLoading(true); setAdminError('')
-    getDocs(query(collectionGroup(db, 'responses'), orderBy('submittedAt', 'desc')))
-      .then(snapshot => { if (active) setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))) })
-      .catch(err => { console.error(err); if (active) setAdminError('응답을 불러오지 못했습니다. Firestore 규칙과 인덱스 설정을 확인해 주세요.') })
-      .finally(() => { if (active) setAdminLoading(false) })
-    return () => { active = false }
-  }, [stage])
-
-  const departments = useMemo(() => [...new Set(responses.map(row => row.department).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko')), [responses])
-  const filteredResponses = useMemo(() => departmentFilter === 'all' ? responses : responses.filter(row => row.department === departmentFilter), [responses, departmentFilter])
+    setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment('')
+    try {
+      const departmentKey = department.replaceAll('/', '_')
+      const snapshot = await getDocs(query(collection(db, 'departments', departmentKey, 'responses'), orderBy('submittedAt', 'desc')))
+      setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
+      setLoadedDepartment(department)
+    } catch (err) {
+      console.error(err); setAdminError('응답을 불러오지 못했습니다. Firestore 규칙을 확인해 주세요.')
+    } finally { setAdminLoading(false) }
+  }
+  const filteredResponses = responses
   const exportCsv = () => {
     const header = ['제출일시', '성별', '이름', '학과', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
     const cell = value => `"${String(value ?? '').replaceAll('"', '""')}"`
@@ -118,13 +121,14 @@ function App() {
   return <main className="shell">
     <header className="topbar"><a className="brand" href="#home" onClick={() => setStage('intro')}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => setStage('intro')}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
     {stage === 'admin' && <section className="admin-panel">
-      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>저장된 응답을 학과별로 확인하고 CSV로 내려받을 수 있습니다.</p></div><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div>
-      <div className="admin-summary"><div><span>전체 응답</span><b>{responses.length}</b></div><div><span>표시 중</span><b>{filteredResponses.length}</b></div><label>학과 필터<select value={departmentFilter} onChange={e => setDepartmentFilter(e.target.value)}><option value="all">전체 학과</option>{departments.map(department => <option key={department} value={department}>{department}</option>)}</select></label></div>
+      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div>
+      <form className="admin-search" onSubmit={loadDepartmentResponses}><label htmlFor="admin-department">조회할 학과</label><input id="admin-department" value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="학과명을 정확히 입력해 주세요"/><button className="primary" disabled={adminLoading || !departmentSearch.trim()}>{adminLoading?'조회 중…':'응답 조회'}</button></form>
+      <div className="admin-summary"><div><span>{loadedDepartment || '조회 학과'}</span><b>{responses.length}</b></div><div><span>응답 건수</span><b>{filteredResponses.length}</b></div></div>
       {adminLoading && <p className="admin-state">응답을 불러오는 중입니다…</p>}
       {adminError && <p className="error-message" role="alert">{adminError}</p>}
       {!adminLoading && !adminError && !filteredResponses.length && <p className="admin-state">아직 저장된 응답이 없습니다.</p>}
       {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
-      <p className="admin-notice">관리자 페이지에 접속한 사람은 응답자의 이름, 학과, 답변을 볼 수 있습니다.</p>
+      <p className="admin-notice">관리자 페이지에 접속한 사람은 학과명으로 응답을 조회할 수 있습니다.</p>
     </section>}
     {stage === 'intro' && <section className="intro-card" id="home">
       <div className="intro-copy"><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>모두를 위한 사회,<br/><em>당신의 생각</em>을 들려주세요</h1><p className="lead">포용사회와 HUSS 프로그램에 대한 여러분의 의견을 들려주세요. 소중한 응답은 더 나은 프로그램을 만드는 데 활용됩니다.</p><div className="survey-meta"><span><b>12</b>개 질문</span><i/><span>약 <b>3분</b> 소요</span></div>
