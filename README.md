@@ -22,16 +22,7 @@ npm run dev
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
 
-Cloud Firestore를 활성화하고 이 저장소의 `firestore.rules`를 배포해야 응답을 저장할 수 있습니다. 이 설문은 이름·성별·학과를 수집하므로 응답 데이터에 접근할 수 있는 운영자 계정을 제한하고, 배포 전에 개인정보 안내 및 보관 기간을 확인하세요.
-
-### 관리자 응답 조회
-
-관리자 조회는 Vercel 서버 함수에서 Firebase Admin SDK로 수행합니다. 브라우저 클라이언트에는 Firestore 읽기 권한을 주지 않습니다. Vercel Production 환경에 다음 **서버 환경 변수**를 등록하세요. `FIREBASE_SERVICE_ACCOUNT_JSON`에는 `huss-39792`의 전용 서비스 계정 JSON 전체를 넣고, 해당 계정에는 `Cloud Datastore Viewer` 역할만 부여합니다.
-
-- `ADMIN_PIN`: 운영자가 정한 4자리 PIN
-- `FIREBASE_SERVICE_ACCOUNT_JSON`: 서비스 계정 키 JSON 전체. Secret으로 저장하고 GitHub에 커밋하지 않습니다.
-
-환경 변수 등록 후 Production을 재배포하고, Firebase Console의 Firestore 규칙에 이 저장소의 `firestore.rules`를 게시하세요. 해당 규칙은 설문 응답 생성만 공개하고 브라우저 응답 읽기는 차단합니다. 운영자 API만 서비스 계정으로 응답을 조회합니다.
+Cloud Firestore를 활성화하고 이 저장소의 `firestore.rules`를 게시해야 응답을 저장하고 관리자 페이지에서 확인할 수 있습니다. 응답 읽기는 PIN과 별개로 Firebase 규칙에서 공개 허용됩니다. 이 구성은 짧은 기간의 소규모 설문용이며, 응답에 개인정보가 포함되므로 누구나 기술적으로 응답을 읽을 수 있다는 점을 이해하고 사용하세요. 별도의 Google Cloud 결제 계정이나 서비스 계정 키는 필요하지 않습니다.
 
 ## Vercel 배포
 

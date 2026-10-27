@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Check, ChevronLeft, ChevronRight, Download, Leaf, Send, TableProperties } from 'lucide-react'
 import { initializeApp } from 'firebase/app'
-import { addDoc, collection, getFirestore, serverTimestamp } from 'firebase/firestore'
+import { addDoc, collection, getDocs, getFirestore, orderBy, query, serverTimestamp } from 'firebase/firestore'
 import './style.css'
 
 const questions = [
@@ -30,6 +30,7 @@ const firebaseConfig = {
 }
 const firebaseReady = Object.values(firebaseConfig).every(Boolean)
 const db = firebaseReady ? getFirestore(initializeApp(firebaseConfig)) : null
+const ADMIN_PIN_SHA256 = 'a6f766a88c0bb123f62b462bbd69d6b936b8649ddf6b3fa9738fe44fabe79422'
 
 function App() {
   const [stage, setStage] = useState(() => window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -55,47 +56,34 @@ function App() {
     return () => window.removeEventListener('hashchange', syncRoute)
   }, [])
 
-  useEffect(() => {
-    if (stage !== 'admin') return
-    let active = true
-    fetch('/api/admin-responses', { credentials: 'same-origin' })
-      .then(response => response.ok ? response.json() : null)
-      .then(payload => { if (active) setAdminUnlocked(payload?.authenticated === true) })
-      .catch(() => { if (active) setAdminUnlocked(false) })
-    return () => { active = false }
-  }, [stage])
-
   const loadDepartmentResponses = async e => {
     e.preventDefault()
     const department = departmentSearch.trim()
     if (!department) return
+    if (!db) { setAdminError('Firebase 웹 앱 설정을 확인해 주세요.'); return }
     setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
     try {
-      const response = await fetch(`/api/admin-responses?department=${encodeURIComponent(department)}`, { credentials: 'same-origin' })
-      const payload = await response.json().catch(() => ({}))
-      if (response.status === 401) { setAdminUnlocked(false); throw new Error('관리자 인증이 만료되었습니다. PIN을 다시 입력해 주세요.') }
-      if (!response.ok) throw new Error(payload.error || `응답 조회 오류 (${response.status})`)
-      setResponses(payload.responses || [])
+      const departmentKey = department.replaceAll('/', '_')
+      const snapshot = await getDocs(query(collection(db, 'departments', departmentKey, 'responses'), orderBy('submittedAt', 'desc')))
+      setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
       setLoadedDepartment(department); setHasSearched(true)
     } catch (err) {
       console.error('HUSS admin query failed:', err)
-      setAdminError(err.message || '응답을 불러오지 못했습니다.')
+      if (err.code === 'permission-denied') setAdminError('Firestore 규칙이 조회를 막았습니다. Firebase Console > Firestore > 규칙에서 응답 읽기를 허용한 뒤 게시해 주세요.')
+      else setAdminError(`응답 조회 오류: ${err.code || 'unknown'}${err.message ? ` — ${err.message}` : ''}`)
     } finally { setAdminLoading(false) }
   }
   const unlockAdmin = async e => {
     e.preventDefault()
     if (!/^\d{4}$/.test(adminPin)) { setPinError('4자리 숫자를 입력해 주세요.'); return }
     setPinLoading(true); setPinError('')
-    try {
-      const response = await fetch('/api/admin-responses', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'login', pin: adminPin }) })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) throw new Error(payload.error || '관리자 PIN을 확인하지 못했습니다.')
-      setAdminUnlocked(true); setAdminPin('')
-    } catch (err) { setPinError(err.message || '관리자 인증 서버에 연결하지 못했습니다.') }
-    finally { setPinLoading(false) }
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(adminPin))
+    const hash = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('')
+    if (hash === ADMIN_PIN_SHA256) { setAdminUnlocked(true); setPinError(''); setAdminPin('') }
+    else { setPinError('PIN이 올바르지 않습니다.'); setAdminPin('') }
+    setPinLoading(false)
   }
-  const logoutAdmin = async () => {
-    try { await fetch('/api/admin-responses', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'logout' }) }) } catch {}
+  const logoutAdmin = () => {
     setAdminUnlocked(false); setAdminPin(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
   }
   const filteredResponses = responses
@@ -103,7 +91,7 @@ function App() {
     const header = ['제출일시', '성별', '이름', '학과', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
     const cell = value => `"${String(value ?? '').replaceAll('"', '""')}"`
     const rows = filteredResponses.map(row => [
-      row.submittedAt ? new Date(row.submittedAt).toLocaleString('ko-KR') : '', row.gender, row.name, row.department,
+      row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '', row.gender, row.name, row.department,
       ...questions.map((_, i) => {
         const answer = row.answers?.[i]
         if (Array.isArray(answer)) return answer.join(', ')
@@ -161,8 +149,8 @@ function App() {
       {adminError && <p className="error-message" role="alert">{adminError}</p>}
       {!adminLoading && !adminError && !hasSearched && <p className="admin-state">학과명을 입력한 뒤 ‘응답 조회’를 눌러주세요.</p>}
       {!adminLoading && !adminError && hasSearched && !filteredResponses.length && <p className="admin-state">‘{loadedDepartment}’에 저장된 응답이 없습니다. 학과명을 정확히 입력했는지 확인해 주세요.</p>}
-      {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt ? new Date(row.submittedAt).toLocaleString('ko-KR') : '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
-      <p className="admin-notice">관리자 PIN 인증이 완료된 세션에서만 응답을 조회할 수 있습니다. 잠금 버튼을 누르면 세션이 종료됩니다.</p>
+      {!!filteredResponses.length && <div className="response-table-wrap"><table className="response-table"><thead><tr><th>제출일시</th><th>성별</th><th>이름</th><th>학과</th>{questions.map((_, i) => <th key={i}>Q{i+1}</th>)}</tr></thead><tbody>{filteredResponses.map(row => <tr key={row.id}><td>{row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '—'}</td><td>{row.gender}</td><td>{row.name}</td><td>{row.department}</td>{questions.map((_, i) => { const answer = row.answers?.[i]; const display = Array.isArray(answer) ? answer.join(', ') : answer && typeof answer === 'object' ? `${(answer.selected ?? []).join(', ')}${answer.other ? ` (기타: ${answer.other})` : ''}` : answer ?? '—'; return <td key={i}>{display}</td> })}</tr>)}</tbody></table></div>}
+      <p className="admin-notice">PIN은 관리자 화면을 가리는 간편 잠금입니다. Firestore 규칙이 공개 읽기를 허용하므로 응답 데이터는 누구나 기술적으로 접근할 수 있습니다.</p>
     </>}</section>}
     {stage === 'intro' && <section className="intro-card" id="home">
       <div className="intro-copy"><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>모두를 위한 사회,<br/><em>당신의 생각</em>을 들려주세요</h1><p className="lead">포용사회와 HUSS 프로그램에 대한 여러분의 의견을 들려주세요. 소중한 응답은 더 나은 프로그램을 만드는 데 활용됩니다.</p><div className="survey-meta"><span><b>12</b>개 질문</span><i/><span>약 <b>3분</b> 소요</span></div>
