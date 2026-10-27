@@ -39,6 +39,7 @@ function App() {
   const [step, setStep] = useState(0)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [savedDocId, setSavedDocId] = useState('')
   const [responses, setResponses] = useState([])
   const [adminLoading, setAdminLoading] = useState(false)
   const [adminError, setAdminError] = useState('')
@@ -124,13 +125,23 @@ function App() {
       for (const [key, value] of Object.entries(answers)) {
         if (key.endsWith('-other') && value.trim()) normalizedAnswers[key.slice(0, -6)] = { selected: answers[key.slice(0, -6)], other: value.trim() }
       }
-      await addDoc(collection(db, 'departments', departmentKey, 'responses'), {
+      const saved = await addDoc(collection(db, 'departments', departmentKey, 'responses'), {
         ...profile, name: profile.name.trim(), department: profile.department.trim(), answers: normalizedAnswers,
         submittedAt: serverTimestamp(),
       })
+      setSavedDocId(saved.id)
       setStage('complete')
     } catch (err) {
-      console.error(err); setError('응답을 저장하지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도해 주세요.')
+      console.error('HUSS response save failed:', err)
+      if (err.code === 'permission-denied') {
+        setError('Firestore가 저장 권한을 거부했습니다. Firebase Console > Firestore > 규칙에서 이 저장소의 firestore.rules를 게시했는지 확인해 주세요.')
+      } else if (err.code === 'invalid-argument') {
+        setError('응답 형식이 올바르지 않습니다. 입력 길이를 확인한 뒤 다시 제출해 주세요.')
+      } else if (err.code === 'unavailable' || err.code === 'network-request-failed') {
+        setError('네트워크 연결을 확인한 뒤 다시 제출해 주세요. 응답은 아직 저장되지 않았습니다.')
+      } else {
+        setError(`응답을 저장하지 못했습니다 (${err.code || 'unknown'}). 잠시 후 다시 시도해 주세요.`)
+      }
     } finally { setSaving(false) }
   }
 
@@ -154,19 +165,19 @@ function App() {
     </>}</section>}
     {stage === 'intro' && <section className="intro-card" id="home">
       <div className="intro-copy"><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>모두를 위한 사회,<br/><em>당신의 생각</em>을 들려주세요</h1><p className="lead">포용사회와 HUSS 프로그램에 대한 여러분의 의견을 들려주세요. 소중한 응답은 더 나은 프로그램을 만드는 데 활용됩니다.</p><div className="survey-meta"><span><b>12</b>개 질문</span><i/><span>약 <b>3분</b> 소요</span></div>
-        <form className="profile-form" onSubmit={start}><h2>응답자 정보</h2><label>성별<div className="gender-row">{['여성', '남성', '기타'].map(v => <button type="button" key={v} className={`gender-choice ${profile.gender === v ? 'active' : ''}`} onClick={() => setProfile({...profile, gender:v})}>{v}</button>)}</div></label><label>이름<input required placeholder="이름을 입력해 주세요" value={profile.name} onChange={e => setProfile({...profile,name:e.target.value})}/></label><label>학과<input required placeholder="학과를 입력해 주세요" value={profile.department} onChange={e => setProfile({...profile,department:e.target.value})}/></label><button className="primary full" type="submit" disabled={!profile.gender || !profile.name.trim() || !profile.department.trim()}>설문 시작하기 <ChevronRight size={18}/></button></form>
+        <form className="profile-form" onSubmit={start}><h2>응답자 정보</h2><label>성별<div className="gender-row">{['여성', '남성', '기타'].map(v => <button type="button" key={v} className={`gender-choice ${profile.gender === v ? 'active' : ''}`} onClick={() => setProfile({...profile, gender:v})}>{v}</button>)}</div></label><label>이름<input required maxLength={80} placeholder="이름을 입력해 주세요" value={profile.name} onChange={e => setProfile({...profile,name:e.target.value})}/></label><label>학과<input required maxLength={100} placeholder="학과를 입력해 주세요" value={profile.department} onChange={e => setProfile({...profile,department:e.target.value})}/></label><button className="primary full" type="submit" disabled={!profile.gender || !profile.name.trim() || !profile.department.trim()}>설문 시작하기 <ChevronRight size={18}/></button></form>
         <p className="privacy-note">응답 자료는 학과별 통계와 사업 개선 목적으로 활용됩니다.</p>
       </div><div className="intro-art"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="sunburst">✦</div><img src="/mascot-transparent.png" alt="HUSS 설문 캐릭터"/><div className="speech-bubble">함께 만드는<br/><b>포용사회</b> 🌱</div><div className="art-caption">YOUR VOICE<br/><strong>MATTERS</strong></div></div>
     </section>}
     {stage === 'survey' && <section className="survey-layout"><aside className="survey-aside"><div className="aside-mascot"><img src="/mascot-transparent.png" alt=""/></div><p>HUSS 포용사회사업단<br/><b>인지도 설문</b></p><div className="progress-copy"><span>진행 상황</span><b>{step+1} / {questions.length}</b></div><div className="progress-track"><span style={{width:`${((step+1)/questions.length)*100}%`}}/></div><div className="question-nav">{questions.map((_,i)=><span key={i} className={`${i===step?'current':''} ${i<step?'done':''}`}>{i<step?<Check size={12}/>:String(i+1).padStart(2,'0')}</span>)}</div><div className="aside-tip">“여러분의 솔직한 응답이 더 포용적인 캠퍼스를 만듭니다.”</div></aside>
       <div className="question-panel"><div className="question-kicker">QUESTION {String(step+1).padStart(2,'0')} <span> / 12</span></div><h1>{q.text}</h1><div className="type-hint">{q.type==='single'?'하나만 선택해 주세요':q.type==='multiple'?'해당하는 항목을 모두 선택해 주세요':q.type==='scale'?'1점부터 5점 중 선택해 주세요':'자유롭게 작성해 주세요'}</div>
-        {q.type==='text' && <textarea autoFocus placeholder="여기에 답변을 입력해 주세요" value={current} onChange={e=>update(step,e.target.value)} rows={5}/>}
+        {q.type==='text' && <textarea autoFocus maxLength={2000} placeholder="여기에 답변을 입력해 주세요" value={current} onChange={e=>update(step,e.target.value)} rows={5}/>}
         {q.type==='single' && <div className="options">{q.options.map((v,i)=><button key={v} className={`option ${current===v?'selected':''}`} onClick={()=>update(step,v)}><span className="option-index">{String.fromCharCode(65+i)}</span><span>{v}</span><span className="radio"/></button>)}</div>}
-        {q.type==='multiple' && <div className="options">{q.options.map((v,i)=><button key={v} className={`option ${current.includes(v)?'selected':''}`} onClick={()=>toggle(v)}><span className="option-index">{String.fromCharCode(65+i)}</span><span>{v}</span><span className="checkbox">{current.includes(v)&&<Check size={14}/>}</span></button>)}{q.other&&current.includes('기타')&&<input className="other-input" placeholder="기타 의견을 입력해 주세요" value={answers[`${step}-other`]||''} onChange={e=>setAnswers({...answers,[`${step}-other`]:e.target.value})}/>}</div>}
+        {q.type==='multiple' && <div className="options">{q.options.map((v,i)=><button key={v} className={`option ${current.includes(v)?'selected':''}`} onClick={()=>toggle(v)}><span className="option-index">{String.fromCharCode(65+i)}</span><span>{v}</span><span className="checkbox">{current.includes(v)&&<Check size={14}/>}</span></button>)}{q.other&&q.options.some(v=>v.startsWith('기타')&&current.includes(v))&&<input className="other-input" maxLength={500} placeholder="기타 의견을 입력해 주세요" value={answers[`${step}-other`]||''} onChange={e=>setAnswers({...answers,[`${step}-other`]:e.target.value})}/>}</div>}
         {q.type==='scale' && <div className="scale-wrap"><div className="scale-labels"><span>전혀 없다</span><span>매우 있다</span></div><div className="scale-options">{[1,2,3,4,5].map(n=><button key={n} className={`scale-option ${current===n?'selected':''}`} onClick={()=>update(step,n)}><span>{n}</span></button>)}</div><p className="scale-caption">선택한 숫자를 눌러주세요</p></div>}
         {error&&<p className="error-message" role="alert">{error}</p>}<div className="question-actions"><button className="back-button" onClick={()=>{setError(''); if(step===0)setStage('intro');else setStep(step-1)}}><ChevronLeft size={17}/> 이전</button>{step<questions.length-1?<button disabled={!canContinue} className="primary" onClick={()=>setStep(step+1)}>다음 질문 <ChevronRight size={17}/></button>:<button disabled={!canContinue||saving} className="primary" onClick={finish}>{saving?'저장 중…':'응답 제출하기'} <Send size={16}/></button>}</div>
       </div></section>}
-    {stage==='complete'&&<section className="complete-card"><div className="complete-spark">✦</div><img src="/mascot-transparent.png" alt="HUSS 캐릭터"/><span className="eyebrow">THANK YOU</span><h1>응답이 전달되었어요!</h1><p>소중한 의견을 나눠주셔서 감사합니다.<br/>여러분의 목소리로 더 포용적인 캠퍼스를 만들어갈게요.</p><button className="primary" onClick={()=>{setProfile({gender:'',name:'',department:''});setAnswers({});setStep(0);setStage('intro')}}>처음으로 돌아가기 <ChevronRight size={17}/></button></section>}
+    {stage==='complete'&&<section className="complete-card"><div className="complete-spark">✦</div><img src="/mascot-transparent.png" alt="HUSS 캐릭터"/><span className="eyebrow">THANK YOU · 저장 완료</span><h1>응답이 전달되었어요!</h1><p>응답이 Firestore에 저장되었습니다.<br/>학과: {profile.department}<br/>저장 ID: {savedDocId}</p><p>소중한 의견을 나눠주셔서 감사합니다.<br/>여러분의 목소리로 더 포용적인 캠퍼스를 만들어갈게요.</p><button className="primary" onClick={()=>{setProfile({gender:'',name:'',department:''});setAnswers({});setStep(0);setSavedDocId('');setStage('intro')}}>처음으로 돌아가기 <ChevronRight size={17}/></button></section>}
     <footer><span>HUSS 포용사회사업단 인지도 설문</span><span>함께 만드는 포용사회 <Leaf size={13}/></span></footer>
   </main>
 }
