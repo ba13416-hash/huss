@@ -49,8 +49,8 @@ service cloud.firestore {
                     && request.resource.data.department.size() <= 100
                     && hasValidAnswers(request.resource.data.answers)
                     && request.resource.data.submittedAt == request.time;
-      allow read, update, delete: if false;
+      allow read: if true;
+      allow update, delete: if false;
     }
   }
 }
-
