@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  function hasValidMulti(value, choices) {
+    return value is list && value.size() > 0 && value.size() <= choices.size() && value.hasOnly(choices);
+  }
+
+  function hasValidOther(value, choices, otherChoice) {
+    return hasValidMulti(value, choices)
+      || (value is map
+        && value.keys().hasAll(['selected', 'other'])
+        && value.keys().hasOnly(['selected', 'other'])
+        && hasValidMulti(value.selected, choices)
+        && value.selected.hasAny([otherChoice])
+        && value.other is string
+        && value.other.size() > 0
+        && value.other.size() <= 500);
+  }
+
+  function hasValidAnswers(a) {
+    return a is map
+      && a.size() == 12
+      && a.keys().hasOnly(['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11'])
+      && a['0'] is string && a['0'] in ['자주 있다', '가끔 있다', '거의 없다', '전혀 없다']
+      && a['1'] is string && a['1'] in ['처음 들어본다', '이름만 들어봤다', '어떤 일을 하는지 알고 있다', '참여해본 적이 있다']
+      && a['2'] is string && a['2'].size() <= 2000
+      && a['3'] is string && a['3'] in ['알고 있다', '몰랐다']
+      && hasValidOther(a['4'], ['포스터', '수업 수강', '인스타그램', '블로그', '주변 소개', '기타(직접 입력)'], '기타(직접 입력)')
+      && hasValidMulti(a['5'], ['해외 탐방·연수', '전국 HUSS 융합 캠프', '해커톤·경진대회', '마일리지장학금', '역량강화특강', '기타'])
+      && hasValidMulti(a['6'], ['포용사회 안전망', '갈등코디네이터', '디지털포용', '포용경제'])
+      && hasValidMulti(a['7'], ['시간이 부족하다', '정보가 부족하다', '전공과 관련이 없어 보인다', '참여 방법을 모른다', '필요성을 못 느낀다', '기타'])
+      && a['8'] is int && a['8'] >= 1 && a['8'] <= 5
+      && hasValidOther(a['9'], ['인스타그램 등 SNS', '에브리타임 등 대학생 커뮤니티', '학교 홈페이지 및 공지사항', '학과 홈페이지 및 게시판', '부경대학교 알림톡', '교내 포스터 및 현수막', '기타 (직접 입력)'], '기타 (직접 입력)')
+      && hasValidOther(a['10'], ['사업단의 목적 및 주요 활동', '프로그램별 참여 방법 및 일정', '마이크로디그리 이수 방법 및 혜택', '장학금 및 수상 혜택', '해외 탐방 및 연수 기회', '실제 참여 학생들의 후기', '졸업 후 진로와의 연계성', '기타 (직접 입력)'], '기타 (직접 입력)')
+      && hasValidOther(a['11'], ['수업 시간과 겹치지 않는 일정', '짧은 기간 안에 참여할 수 있는 구성', '참여 절차 간소화', '프로그램에 대한 사전 안내 강화', '전공과 연계된 프로그램 확대', '기타 (직접 입력)'], '기타 (직접 입력)');
+  }
+
+  match /databases/{database}/documents {
+    // Public survey submissions are allowed; survey data may contain personal information.
+    match /departments/{department}/responses/{responseId} {
+      allow create: if request.resource.data.keys().hasAll(['gender', 'name', 'department', 'answers', 'submittedAt'])
+                    && request.resource.data.keys().hasOnly(['gender', 'name', 'department', 'answers', 'submittedAt'])
+                    && request.resource.data.department == department
+                    && request.resource.data.gender in ['여성', '남성', '기타']
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() > 0
+                    && request.resource.data.name.size() <= 80
+                    && request.resource.data.department is string
+                    && request.resource.data.department.size() > 0
+                    && request.resource.data.department.size() <= 100
+                    && hasValidAnswers(request.resource.data.answers)
+                    && request.resource.data.submittedAt == request.time;
+      allow read, update, delete: if false;
+    }
+  }
+}
+
