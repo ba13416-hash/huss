@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Check, ChevronLeft, ChevronRight, Download, Leaf, Send, TableProperties } from 'lucide-react'
 import { initializeApp } from 'firebase/app'
-import { addDoc, collection, getDocs, getFirestore, orderBy, query, serverTimestamp } from 'firebase/firestore'
+import { addDoc, collection, collectionGroup, getDocs, getFirestore, serverTimestamp } from 'firebase/firestore'
 import './style.css'
 
 const questions = [
@@ -50,6 +50,9 @@ function App() {
   const [adminPin, setAdminPin] = useState('')
   const [pinError, setPinError] = useState('')
   const [pinLoading, setPinLoading] = useState(false)
+  const [allResponses, setAllResponses] = useState([])
+  const [summaryLoading, setSummaryLoading] = useState(false)
+  const [summaryError, setSummaryError] = useState('')
 
   useEffect(() => {
     const syncRoute = () => setStage(window.location.hash === '#admin' ? 'admin' : 'intro')
@@ -65,12 +68,17 @@ function App() {
     setAdminLoading(true); setAdminError(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
     try {
       const departmentKey = department.replaceAll('/', '_')
-      const snapshot = await getDocs(query(collection(db, 'departments', departmentKey, 'responses'), orderBy('submittedAt', 'desc')))
-      setResponses(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })))
+      // Avoid requiring a composite/index configuration for a basic department lookup.
+      // Sort in the browser so every response in the department is shown even if older
+      // documents have no submittedAt field or the Firestore index is not ready.
+      const snapshot = await getDocs(collection(db, 'departments', departmentKey, 'responses'))
+      const rows = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      rows.sort((a, b) => (b.submittedAt?.toMillis?.() ?? 0) - (a.submittedAt?.toMillis?.() ?? 0))
+      setResponses(rows)
       setLoadedDepartment(department); setHasSearched(true)
     } catch (err) {
       console.error('HUSS admin query failed:', err)
-      if (err.code === 'permission-denied') setAdminError('Firestore 규칙이 조회를 막았습니다. Firebase Console > Firestore > 규칙에서 응답 읽기를 허용한 뒤 게시해 주세요.')
+      if (err.code === 'permission-denied') setAdminError('Firestore가 조회를 거부했습니다. Firebase Console에서 프로젝트 ID가 huss-39792인지 확인하고, Firestore > 규칙에 저장소의 firestore.rules 내용을 게시해 주세요. 규칙 게시만으로는 설문 데이터가 삭제되지 않습니다.')
       else setAdminError(`응답 조회 오류: ${err.code || 'unknown'}${err.message ? ` — ${err.message}` : ''}`)
     } finally { setAdminLoading(false) }
   }
@@ -85,8 +93,40 @@ function App() {
     setPinLoading(false)
   }
   const logoutAdmin = () => {
-    setAdminUnlocked(false); setAdminPin(''); setResponses([]); setLoadedDepartment(''); setHasSearched(false)
+    setAdminUnlocked(false); setAdminPin(''); setResponses([]); setAllResponses([]); setLoadedDepartment(''); setHasSearched(false)
   }
+  const loadAllResponses = async () => {
+    if (!db) { setSummaryError('Firebase 연결 설정을 확인해 주세요.'); return }
+    setSummaryLoading(true); setSummaryError('')
+    try {
+      const snapshot = await getDocs(collectionGroup(db, 'responses'))
+      const rows = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }))
+      rows.sort((a, b) => (b.submittedAt?.toMillis?.() ?? 0) - (a.submittedAt?.toMillis?.() ?? 0))
+      setAllResponses(rows)
+    } catch (err) {
+      console.error('HUSS summary query failed:', err)
+      setSummaryError(err.code === 'permission-denied'
+        ? '전체 집계 읽기가 거부됐습니다. Firebase Console에 수정된 firestore.rules를 게시해 주세요.'
+        : `전체 집계 오류: ${err.code || 'unknown'}${err.message ? ` — ${err.message}` : ''}`)
+    } finally { setSummaryLoading(false) }
+  }
+  useEffect(() => { if (stage === 'admin' && adminUnlocked) loadAllResponses() }, [stage, adminUnlocked])
+  const departmentCounts = Object.entries(allResponses.reduce((counts, row) => {
+    const name = row.department || '학과 미상'
+    counts[name] = (counts[name] || 0) + 1
+    return counts
+  }, {})).sort((a, b) => b[1] - a[1])
+  const answerCounts = questions.map((question, index) => {
+    if (question.type === 'text') return { question, index, freeText: allResponses.filter(row => typeof row.answers?.[index] === 'string' && row.answers[index].trim()).length, counts: [] }
+    const counts = question.type === 'scale' ? [1, 2, 3, 4, 5].map(value => [String(value), allResponses.filter(row => row.answers?.[index] === value).length])
+      : question.options.map(option => [option, allResponses.reduce((count, row) => {
+        const answer = row.answers?.[index]
+        if (Array.isArray(answer)) return count + (answer.includes(option) ? 1 : 0)
+        if (answer && typeof answer === 'object') return count + ((answer.selected || []).includes(option) ? 1 : 0)
+        return count + (answer === option ? 1 : 0)
+      }, 0)])
+    return { question, index, counts }
+  })
   const filteredResponses = responses
   const exportCsv = () => {
     const header = ['제출일시', '성별', '이름', '학과', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
@@ -154,6 +194,20 @@ function App() {
     <header className="topbar"><a className="brand" href="#home" onClick={() => {logoutAdmin();setStage('intro')}}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => {logoutAdmin();setStage('intro')}}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
     {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={pinLoading || adminPin.length!==4}>{pinLoading?'확인 중…':'관리자 페이지 열기'}</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
       <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><div className="admin-actions"><button className="secondary-button" onClick={logoutAdmin}>잠금</button><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div></div>
+      <section className="analytics-panel" aria-labelledby="analytics-title">
+        <div className="analytics-heading"><div><h2 id="analytics-title">전체 설문 현황</h2><p>모든 학과 응답을 합산한 결과입니다.</p></div><button className="secondary-button" onClick={loadAllResponses} disabled={summaryLoading}>{summaryLoading ? '집계 중…' : '현황 새로고침'}</button></div>
+        <div className="analytics-total"><span>총 설문자</span><strong>{summaryLoading && !allResponses.length ? '…' : `${allResponses.length}명`}</strong><small>{departmentCounts.length}개 학과</small></div>
+        {summaryError && <p className="error-message" role="alert">{summaryError}</p>}
+        {!summaryError && !summaryLoading && !allResponses.length && <p className="admin-state analytics-empty">아직 집계할 응답이 없습니다.</p>}
+        {!!departmentCounts.length && <div className="department-summary"><h3>학과별 응답자</h3><div className="department-chips">{departmentCounts.map(([department, count]) => <div className="department-chip" key={department}><span>{department}</span><b>{count}명</b></div>)}</div></div>}
+        {!!allResponses.length && <div className="question-analytics"><h3>문항별 응답 현황</h3><div className="question-stat-grid">{answerCounts.map(({ question, index, counts, freeText }) => {
+          const answered = question.type === 'text' ? freeText : counts.reduce((sum, [, count]) => sum + count, 0)
+          const scaleMax = question.type === 'multiple' ? allResponses.length : answered
+          return <article className="question-stat" key={index}><div className="question-stat-title"><b>Q{index + 1}</b><span>{question.text}</span><small>{question.type === 'multiple' ? `응답자 ${allResponses.length}명 · 복수응답` : `응답 ${answered}명`}</small></div>
+            {question.type === 'text' ? <div className="free-response-count">주관식 답변 <strong>{freeText}명</strong></div> : <div className="answer-bars">{counts.map(([label, count]) => <div className="answer-bar-row" key={label}><span title={label}>{label}</span><div className="answer-bar-track"><i style={{width: `${scaleMax ? Math.min(100, count / scaleMax * 100) : 0}%`}}/></div><b>{count}명</b></div>)}</div>}
+          </article>
+        })}</div></div>}
+      </section>
       <form className="admin-search" onSubmit={loadDepartmentResponses}><label htmlFor="admin-department">조회할 학과</label><input id="admin-department" value={departmentSearch} onChange={e => setDepartmentSearch(e.target.value)} placeholder="학과명을 정확히 입력해 주세요"/><button className="primary" disabled={adminLoading || !departmentSearch.trim()}>{adminLoading?'조회 중…':'응답 조회'}</button></form>
       <div className="admin-summary"><div><span>조회 학과</span><b className="admin-summary-value">{loadedDepartment || '—'}</b></div><div><span>응답 건수</span><b className="admin-summary-value">{hasSearched ? filteredResponses.length : '—'}</b></div></div>
       {adminLoading && <p className="admin-state">응답을 불러오는 중입니다…</p>}
@@ -183,3 +237,4 @@ function App() {
 }
 
 createRoot(document.getElementById('root')).render(<App />)
+
