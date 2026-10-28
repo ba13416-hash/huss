@@ -53,5 +53,12 @@ service cloud.firestore {
       allow read: if true;
       allow update, delete: if false;
     }
+
+    // Public-read collection-group access for the survey dashboard's full aggregate.
+    // This applies to every subcollection named "responses" in the project.
+    match /{path=**}/responses/{responseId} {
+      allow read: if true;
+    }
   }
 }
+
