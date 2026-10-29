@@ -164,11 +164,11 @@ function App() {
     return { question, index, counts }
   })
   const filteredResponses = responses
-  const exportCsv = () => {
-    const header = ['제출일시', '성별', '이름', '학과', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
+  const downloadResponsesCsv = (sourceRows, fileName) => {
+    const header = ['제출일시', '응답 ID', '성별', '이름', '학과(입력 원문)', ...questions.map((question, i) => `Q${i + 1}. ${question.text}`)]
     const cell = value => `"${String(value ?? '').replaceAll('"', '""')}"`
-    const rows = filteredResponses.map(row => [
-      row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '', row.gender, row.name, row.department,
+    const rows = sourceRows.map(row => [
+      row.submittedAt?.toDate?.().toLocaleString('ko-KR') ?? '', row.id, row.gender, row.name, row.department,
       ...questions.map((_, i) => {
         const answer = row.answers?.[i]
         if (Array.isArray(answer)) return answer.join(', ')
@@ -178,8 +178,14 @@ function App() {
     ])
     const csv = '\uFEFF' + [header, ...rows].map(line => line.map(cell).join(',')).join('\r\n')
     const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }))
-    const link = document.createElement('a'); link.href = url; link.download = 'huss-survey-responses.csv'; link.click(); URL.revokeObjectURL(url)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    link.click()
+    URL.revokeObjectURL(url)
   }
+  const exportCsv = () => downloadResponsesCsv(filteredResponses, 'huss-survey-department-responses.csv')
+  const exportAllCsv = () => downloadResponsesCsv(allResponses, 'huss-survey-all-responses.csv')
 
   const update = (qid, value) => setAnswers(prev => ({ ...prev, [qid]: value }))
   const q = questions[step]
@@ -229,7 +235,7 @@ function App() {
   return <main className="shell">
     <header className="topbar"><a className="brand" href="#home" onClick={() => {logoutAdmin();setStage('intro')}}><span className="brand-mark"><Leaf size={18}/></span><span>HUSS <b>포용사회사업단</b></span></a><nav className="top-nav"><a href="#home" onClick={() => {logoutAdmin();setStage('intro')}}>설문 참여</a><a className={stage === 'admin' ? 'active' : ''} href="#admin" onClick={() => setStage('admin')}><TableProperties size={14}/> 관리자</a></nav></header>
     {stage === 'admin' && <section className="admin-panel">{!adminUnlocked ? <div className="admin-lock"><span className="eyebrow"><span className="dot"/> HUSS ADMIN</span><h1>관리자 PIN 입력</h1><p>관리자 페이지에 들어가려면 4자리 PIN을 입력해 주세요.</p><form onSubmit={unlockAdmin}><input aria-label="관리자 PIN" type="password" inputMode="numeric" pattern="[0-9]{4}" maxLength={4} autoComplete="off" value={adminPin} onChange={e=>setAdminPin(e.target.value.replace(/\D/g,'').slice(0,4))} placeholder="••••"/><button className="primary" disabled={pinLoading || adminPin.length!==4}>{pinLoading?'확인 중…':'관리자 페이지 열기'}</button></form>{pinError&&<p className="error-message" role="alert">{pinError}</p>}</div> : <>
-      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><div className="admin-actions"><button className="secondary-button" onClick={logoutAdmin}>잠금</button><button className="primary" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> CSV 다운로드</button></div></div>
+      <div className="admin-heading"><div><span className="eyebrow"><span className="dot"/> HUSS SURVEY</span><h1>설문 응답 관리</h1><p>학과명을 입력해 응답을 확인하고 CSV로 내려받을 수 있습니다.</p></div><div className="admin-actions"><button className="primary" onClick={exportAllCsv} disabled={!allResponses.length}><Download size={16}/> 전체 응답 CSV</button><button className="secondary-button" onClick={exportCsv} disabled={!filteredResponses.length}><Download size={16}/> 학과 응답 CSV</button><button className="secondary-button" onClick={logoutAdmin}>잠금</button></div></div>
       <section className="analytics-panel" aria-labelledby="analytics-title">
         <div className="analytics-heading"><div><h2 id="analytics-title">전체 설문 현황</h2><p>모든 학과 응답을 합산한 결과입니다.</p></div><button className="secondary-button" onClick={loadAllResponses} disabled={summaryLoading}>{summaryLoading ? '집계 중…' : '현황 새로고침'}</button></div>
         <div className="analytics-total"><span>총 설문자</span><strong>{summaryLoading && !allResponses.length ? '…' : `${allResponses.length}명`}</strong><small>{departmentCounts.length}개 학과</small></div>
